@@ -1,6 +1,7 @@
 import argparse
 import copy
 import datetime
+import json
 import os.path
 import re
 import urllib
@@ -328,6 +329,12 @@ def main():
                         action='store_true',
                         default=False,
                         required=False)
+    parser.add_argument('--json',
+                        help='Json output',
+                        dest='json',
+                        action='store_true',
+                        default=False,
+                        required=False)
 
     args = parser.parse_args()
 
@@ -348,13 +355,8 @@ def main():
         schedules = serializer_instance.remap(eskom_config.eskom_schedules)
     else:
         # schedules = serializer_instance.remap(
-        #     [{"number": 5, "start_time": "2023-01-12 05:00:00", "end_time": "2023-01-12 22:00:00"},
-        #      {"number": 6, "start_time": "2023-01-12 22:00:00", "end_time": "2023-01-12 05:00:00"},
-        #      {"number": 5, "start_time": "2023-01-13 05:00:00", "end_time": "2023-01-13 22:00:00"},
-        #      {"number": 6, "start_time": "2023-01-13 22:00:00", "end_time": "2023-01-13 05:00:00"},
-        #      {"number": 5, "start_time": "2023-01-14 05:00:00", "end_time": "2023-01-14 16:00:00"},
-        #      {"number": 6, "start_time": "2023-01-14 16:00:00", "end_time": "2023-01-14 05:00:00"},
-        #      {"number": 6, "start_time": "2023-01-15 05:00:00", "end_time": "2023-01-15 05:00:00"}])
+        #     [{"number": 3, "start_time": "2023-01-27 00:00:00", "end_time": "2023-01-27 22:00:00"},
+        #      {"number": 4, "start_time": "2023-01-27 22:00:00", "end_time": "2023-01-30 00:00:00"}])
         load_schedule_from_web()
 
     for static_stage in schedules:
@@ -369,7 +371,8 @@ def main():
     new_stages = []
     for schedule in active_schedules:
         # find zone schedule that falls in this schedule
-        stages_for_today = static_zones.get_for_day_and_zone(schedule.end_time.day, my_zone, schedule.start_time.date(),
+        stages_for_today = static_zones.get_for_day_and_zone(schedule.end_time.day, my_zone,
+                                                             schedule.start_time.date(),
                                                              schedule.number)
 
         for static_stage in stages_for_today:
@@ -382,15 +385,39 @@ def main():
 
     new_stages = merge_stages(new_stages)
 
-    print("Current loadshedding status for zone {}".format(my_zone))
-    new_stages.sort(key=stage_sort)
-    current_date = datetime.datetime.min
-    for static_stage in new_stages:
-        d = static_stage.start_time.date()
-        if d != current_date:
-            print("{:%A, %B %d}".format(d))
-            current_date = d
-        print(static_stage.disp())
+    # print("Live schedules:")
+    # for sched in schedules:
+    #     print(sched)
+
+    new_stages.sort(key=lambda x: x.start_time, reverse=False)
+
+    if args.json:
+        combined = {"calculation_date": datetime.datetime.now(), "schedules": schedules, "load_shedding": []}
+        current_date = datetime.datetime.min
+
+        current_stage = None
+        for static_stage in new_stages:
+            d = static_stage.start_time.date()
+            if d != current_date:
+                if current_stage is not None:
+                    combined["load_shedding"].append(current_stage)
+
+                    current_stage = {"display_date": "{:%A, %B %d}".format(d), "date": d, "stages": []}
+                    current_date = d
+                    current_stage["stages"].append(static_stage)
+
+        print(serializer_instance.serialize(combined, pretty=True))
+    else:
+        print("Current loadshedding status for zone {}".format(my_zone))
+        # new_stages.sort(key=stage_sort)
+
+        current_date = datetime.datetime.min
+        for static_stage in new_stages:
+            d = static_stage.start_time.date()
+            if d != current_date:
+                print("{:%A, %B %d}".format(d))
+                current_date = d
+            print(static_stage.disp())
 
 
 def match_current_schedule_header(text):
@@ -415,7 +442,15 @@ def parse_stage(line, stage_date) -> Optional[Stage]:
         if stage.end_time < stage.start_time:
             stage.end_time = stage.end_time + datetime.timedelta(days=1)
         return stage
-
+    else:
+        regex = r"Stage (\d+):.*?(\d{2}:\d{2})"
+        matches = re.search(regex, line)
+        if matches:
+            stage = Stage(int(matches.group(1)), datetime.datetime.combine(datetime.date.today(), datetime.datetime.min.time()),
+                          to_datetime(matches.group(2), stage_date))
+            if stage.end_time < stage.start_time:
+                stage.end_time = stage.end_time + datetime.timedelta(days=1)
+            return stage
     return None
 
 
@@ -424,18 +459,21 @@ def match_current_schedule_dates_and_update(text):
 
     state = "date"  # stage, other
     line, text = get_line(text)
-    date = datetime.datetime.min
+    date = datetime.datetime.combine(datetime.date.today(), datetime.datetime.min.time())
     while state != "other":
         if state == "date":
-            try:
-                date = dateutil.parser.parse(line)
+            if line.startswith('Stage'):
                 state = "stage"
-                line, text = get_line(text)
-            except:
-                if line.startswith("Stage"):
+            else:
+                try:
+                    date = dateutil.parser.parse(line)
                     state = "stage"
-                else:
-                    state = "other"
+                    line, text = get_line(text)
+                except:
+                    if line.startswith("Stage"):
+                        state = "stage"
+                    else:
+                        state = "other"
         elif state == "stage":
             if line.startswith("Stage"):
                 stage = parse_stage(line, date)
