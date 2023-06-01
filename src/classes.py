@@ -17,10 +17,10 @@ class Stage:
         self._key = self._make_key()
 
     def _make_key(self):
-        return "{:00}-{}".format(self.number, str(self.start_time))
+        return "{}-{:00}".format(str(self.start_time), self.number)
 
     def __str__(self):
-        return "Stage:{} from:{} to {}".format(self.number, self.start_time, self.end_time)
+        return "Stage:{} from: {} to {}".format(self.number, self.start_time.time(), self.end_time.time())
 
     def load(self, obj, serializer):
         self.number = int(obj["number"])
@@ -39,6 +39,16 @@ def stage_sort(s: Stage):
 def merge_all_stages(stages: List[Stage]):
     if len(stages) < 2:
         return stages
+
+    # merge different stages with same times together
+    i: int = 0
+    while i < len(stages) - 1:
+        stage1 = stages[i]
+        stage2 = stages[i + 1]
+        if stage1.start_time == stage2.start_time and stage1.end_time == stage2.end_time:
+            del stages[i]
+        else:
+            i = i + 1
 
     cleaned_stages: Lst[Stage] = Lst(stages)
 
@@ -99,8 +109,9 @@ class ZoneStageMap:
         day_schedules = self.stage_by_day[day]
         new_list = [Stage(zs.stage, datetime.datetime.combine(for_date, zs.start_time.time()),
                           datetime.datetime.combine(for_date, zs.end_time.time())) for zs in day_schedules
-                    if zone in zs.zone_list and zs.stage == stage]
-        new_list.sort(key=lambda x: x.start_time, reverse=False)
+                    if zone in zs.zone_list and zs.stage <= stage]
+        # new_list.sort(key=lambda x: x.start_time, reverse=False)
+        new_list.sort(key=stage_sort)
 
         new_list = merge_all_stages(new_list)
         return new_list
