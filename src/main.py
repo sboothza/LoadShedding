@@ -51,9 +51,9 @@ def find_line(text: str, match: str):
     line = "xxxxxxxxxxxxxx"
     while not line.startswith(match):
         if text == "":
-            return False, text
+            return False, "", text
         line, text = get_line(text)
-    return True, text
+    return True, line, text
 
 
 static_zones = ZoneStageMap()
@@ -252,8 +252,8 @@ def load_schedule_from_web():
     text = replace_all(text, "\r", "")
     text = replace_all(text, "\t", "")
     text = replace_all(text, "\n\n", "\n")
-    text = match_current_schedule_header(text)
-    text = match_current_schedule_dates_and_update(text)
+    start_date, text = match_current_schedule_header(text)
+    text = match_current_schedule_dates_and_update(text, start_date)
 
 
 def split_current_schedules():
@@ -348,13 +348,11 @@ def main():
         schedules = serializer_instance.remap(eskom_config.eskom_schedules)
     else:
         # schedules = serializer_instance.remap(
-        #     [{"number": 5, "start_time": "2023-01-12 05:00:00", "end_time": "2023-01-12 22:00:00"},
-        #      {"number": 6, "start_time": "2023-01-12 22:00:00", "end_time": "2023-01-12 05:00:00"},
-        #      {"number": 5, "start_time": "2023-01-13 05:00:00", "end_time": "2023-01-13 22:00:00"},
-        #      {"number": 6, "start_time": "2023-01-13 22:00:00", "end_time": "2023-01-13 05:00:00"},
-        #      {"number": 5, "start_time": "2023-01-14 05:00:00", "end_time": "2023-01-14 16:00:00"},
-        #      {"number": 6, "start_time": "2023-01-14 16:00:00", "end_time": "2023-01-14 05:00:00"},
-        #      {"number": 6, "start_time": "2023-01-15 05:00:00", "end_time": "2023-01-15 05:00:00"}])
+        #     [{"number": 2, "start_time": "2023-01-28 05:00:00", "end_time": "2023-01-28 16:00:00"},
+        #      {"number": 4, "start_time": "2023-01-28 16:00:00", "end_time": "2023-01-29 05:00:00"},
+        #      {"number": 2, "start_time": "2023-01-29 05:00:00", "end_time": "2023-01-29 16:00:00"},
+        #      {"number": 4, "start_time": "2023-01-29 16:00:00", "end_time": "2023-01-30 05:00:00"},
+        #      ])
         load_schedule_from_web()
 
     for static_stage in schedules:
@@ -394,15 +392,34 @@ def main():
 
 
 def match_current_schedule_header(text):
-    res, text = find_line(text, "Load-shedding")
+    res, line, text = find_line(text, "Eskom load-shedding:")
+    matches = re.search(r"Eskom load-shedding: (\d+)-?(\d+)? (\w+) (\d{4})", line)
+    groups = matches.groups()
+
+    time_now = datetime.datetime.combine(datetime.date.today(), datetime.datetime.min.time())
+    month = "{:%B}".format(time_now)
+    year = "{:%Y}".format(time_now)
+    start = "{:%d}".format(time_now)
+
+    if len(groups) > 0:
+        start = groups[0]
+    if len(groups) > 1:
+        end = groups[1]
+    if len(groups) > 2:
+        month = groups[2]
+    if len(groups) > 3:
+        year = groups[3]
+
+    start_date = to_datetime("{day} {month} {year}".format(day=start, month=month, year=year))
+
     if not res:
         print("fail")
         exit(0)
-    res, text = find_line(text, "City customers:")
+    res, _, text = find_line(text, "City customers:")
     if not res:
         print("fail")
         exit(0)
-    return text
+    return start_date, text
 
 
 def parse_stage(line, stage_date) -> Optional[Stage]:
@@ -415,27 +432,38 @@ def parse_stage(line, stage_date) -> Optional[Stage]:
         if stage.end_time < stage.start_time:
             stage.end_time = stage.end_time + datetime.timedelta(days=1)
         return stage
-
+    else:
+        regex = r"Stage (\d+):.*?(\d{2}:\d{2})"
+        matches = re.search(regex, line)
+        if matches:
+            stage = Stage(int(matches.group(1)), datetime.datetime.combine(stage_date, datetime.datetime.min.time()),
+                          to_datetime(matches.group(2), stage_date))
+            if stage.end_time < stage.start_time:
+                stage.end_time = stage.end_time + datetime.timedelta(days=1)
+            return stage
     return None
 
 
-def match_current_schedule_dates_and_update(text):
+def match_current_schedule_dates_and_update(text, start_date:datetime.datetime):
     global schedules
 
     state = "date"  # stage, other
     line, text = get_line(text)
-    date = datetime.datetime.min
+    date = start_date
     while state != "other":
         if state == "date":
-            try:
-                date = dateutil.parser.parse(line)
+            if line.startswith('Stage'):
                 state = "stage"
-                line, text = get_line(text)
-            except:
-                if line.startswith("Stage"):
+            else:
+                try:
+                    date = dateutil.parser.parse(line)
                     state = "stage"
-                else:
-                    state = "other"
+                    line, text = get_line(text)
+                except:
+                    if line.startswith("Stage"):
+                        state = "stage"
+                    else:
+                        state = "other"
         elif state == "stage":
             if line.startswith("Stage"):
                 stage = parse_stage(line, date)

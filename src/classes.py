@@ -17,7 +17,7 @@ class Stage:
         self.key = self._make_key()
 
     def _make_key(self):
-        return "{:00}-{}".format(self.number, str(self.start_time))
+        return "{:%Y-:%m-:%d :%H:%M}-{:00}".format(self.start_time, self.number)
 
     def __str__(self):
         return "Stage:{} from:{} to {}".format(self.number, self.start_time, self.end_time)
