@@ -1,4 +1,5 @@
 import argparse
+import collections
 import copy
 import datetime
 import os.path
@@ -10,10 +11,9 @@ from typing import Optional, List
 import dateutil.parser
 import requests
 import tabula
-import collections
 
 import eskom_config
-from classes import Stage, ZoneStageByDay, ZoneStageMap, stage_sort
+from classes import Stage, ZoneStageByDay, ZoneStageMap
 from extensions import Lst
 
 collections.Callable = collections.abc.Callable
@@ -270,12 +270,15 @@ def split_current_schedules():
             while True:
                 s = Stage(schedule.number, new_start_date, new_end_date)
                 new_schedules.append(s)
-                day = day + 1
+
                 new_start_date = new_start_date.replace(day=day, hour=0, minute=0, second=0, microsecond=0)
+                new_start_date = new_start_date + datetime.timedelta(days=1)
+                day = new_start_date.day
                 if new_start_date > schedule.end_time:
                     break
 
                 new_end_date = new_end_date.replace(day=day)
+                # new_end_date = new_end_date + datetime.timedelta(days=1)
                 if new_end_date > schedule.end_time:
                     new_end_date = schedule.end_time
 
@@ -307,44 +310,15 @@ def merge_stages(stages: List[Stage]):
 # compare next if there is one
 
 
-def main():
+
+
+
+def process_loadshedding(zone:int, is_eskom:bool):
     global schedules
-    parser = argparse.ArgumentParser(description="Download videos from streaming source")
-    parser.add_argument('--zone',
-                        help='zone',
-                        dest='zone',
-                        type=int,
-                        default=0,
-                        required=False)
-    parser.add_argument('--update-tables',
-                        help='Update zone tables',
-                        dest='update',
-                        action='store_true',
-                        default=False,
-                        required=False)
-    parser.add_argument('--use-eskom',
-                        help='Use Eskom schedule',
-                        dest='eskom',
-                        action='store_true',
-                        default=False,
-                        required=False)
-
-    args = parser.parse_args()
-
-    if args.update:
-        download_table()
-        exit(0)
-
-    if args.zone == 0:
-        print('Zone is required')
-        parser.print_help()
-        exit(1)
-
     process_static_schedule()
-    my_zone = int(args.zone)
-    time_now = datetime.datetime.combine(datetime.date.today(), datetime.datetime.min.time())
 
-    if args.eskom:
+    time_now = datetime.datetime.combine(datetime.date.today(), datetime.datetime.min.time())
+    if is_eskom:
         schedules = serializer_instance.remap(eskom_config.eskom_schedules)
     else:
         # schedules = serializer_instance.remap(
@@ -354,41 +328,56 @@ def main():
         #      {"number": 4, "start_time": "2023-01-29 16:00:00", "end_time": "2023-01-30 05:00:00"},
         #      ])
         load_schedule_from_web()
-
     for static_stage in schedules:
         if static_stage.end_time <= static_stage.start_time:
             static_stage.end_time = static_stage.end_time + datetime.timedelta(days=1)
-
     split_current_schedules()
     # find times for zone from start time to end time
-
     active_schedules = [s for s in schedules if time_now <= s.end_time]
-
     new_stages = []
     for schedule in active_schedules:
         # find zone schedule that falls in this schedule
-        stages_for_today = static_zones.get_for_day_and_zone(schedule.end_time.day, my_zone, schedule.start_time.date(),
+        stages_for_today = static_zones.get_for_day_and_zone(schedule.end_time.day, zone,
+                                                             schedule.start_time.date(),
                                                              schedule.number)
 
         for static_stage in stages_for_today:
-            if schedule.start_time <= static_stage.start_time and schedule.end_time >= static_stage.end_time:
+            if schedule.start_time <= static_stage.start_time:
                 # check for existing
                 existing = [x for x in new_stages if
                             x.start_time == static_stage.start_time and x.end_time == static_stage.end_time]
                 if len(existing) == 0:
                     new_stages.append(static_stage)
-
     new_stages = merge_stages(new_stages)
-
-    print("Current loadshedding status for zone {}".format(my_zone))
-    new_stages.sort(key=stage_sort)
+    # print("Live schedules:")
+    # for sched in schedules:
+    #     print(sched)
+    new_stages.sort(key=lambda x: x.start_time, reverse=False)
+    combined = {"calculation_date": datetime.datetime.now(), "schedules": schedules, "load_shedding": []}
     current_date = datetime.datetime.min
+
+    current_stage = None
     for static_stage in new_stages:
         d = static_stage.start_time.date()
         if d != current_date:
-            print("{:%A, %B %d}".format(d))
+            current_stage = {"display_date": "{:%A, %B %d}".format(d), "date": d, "stages": []}
             current_date = d
-        print(static_stage.disp())
+            combined["load_shedding"].append(current_stage)
+
+        current_stage["stages"].append(static_stage)
+
+    return combined
+
+        # print("Current loadshedding status for zone {}".format(zone))
+        # # new_stages.sort(key=stage_sort)
+        #
+        # current_date = datetime.datetime.min
+        # for static_stage in new_stages:
+        #     d = static_stage.start_time.date()
+        #     if d != current_date:
+        #         print("{:%A, %B %d}".format(d))
+        #         current_date = d
+        #     print(static_stage.disp())
 
 
 def match_current_schedule_header(text):
@@ -464,6 +453,18 @@ def match_current_schedule_dates_and_update(text, start_date:datetime.datetime):
                         state = "stage"
                     else:
                         state = "other"
+            if line.startswith('Stage'):
+                state = "stage"
+            else:
+                try:
+                    date = dateutil.parser.parse(line)
+                    state = "stage"
+                    line, text = get_line(text)
+                except:
+                    if line.startswith("Stage"):
+                        state = "stage"
+                    else:
+                        state = "other"
         elif state == "stage":
             if line.startswith("Stage"):
                 stage = parse_stage(line, date)
@@ -473,6 +474,63 @@ def match_current_schedule_dates_and_update(text, start_date:datetime.datetime):
                 state = "date"
 
     return text
+
+
+def main():
+    global schedules
+    parser = argparse.ArgumentParser(description="Download videos from streaming source")
+    parser.add_argument('--zone',
+                        help='zone',
+                        dest='zone',
+                        type=int,
+                        default=0,
+                        required=False)
+    parser.add_argument('--update-tables',
+                        help='Update zone tables',
+                        dest='update',
+                        action='store_true',
+                        default=False,
+                        required=False)
+    parser.add_argument('--use-eskom',
+                        help='Use Eskom schedule',
+                        dest='eskom',
+                        action='store_true',
+                        default=False,
+                        required=False)
+    parser.add_argument('--json',
+                        help='Json output',
+                        dest='json',
+                        action='store_true',
+                        default=False,
+                        required=False)
+
+    args = parser.parse_args()
+
+    if args.update:
+        download_table()
+        exit(0)
+
+    if args.zone == 0:
+        print('Zone is required')
+        parser.print_help()
+        exit(1)
+
+    data = process_loadshedding(int(args.zone), args.eskom)
+
+    if args.json:
+        print(serializer_instance.serialize(data, pretty=True))
+    else:
+        print("Current loadshedding status for zone {}".format(args.zone))
+        # new_stages.sort(key=stage_sort)
+
+        current_date = ""
+        for day in data["load_shedding"]:
+            d = day["display_date"]
+            if d != current_date:
+                print(d)
+                current_date = d
+            for stage in day["stages"]:
+                print(str(stage))
 
 
 if __name__ == '__main__':

@@ -14,31 +14,41 @@ class Stage:
         self.number: int = stage
         self.start_time: datetime.datetime = start_time
         self.end_time: datetime.datetime = end_time
-        self.key = self._make_key()
+        self._key = self._make_key()
 
     def _make_key(self):
         return "{:%Y-:%m-:%d :%H:%M}-{:00}".format(self.start_time, self.number)
 
     def __str__(self):
-        return "Stage:{} from:{} to {}".format(self.number, self.start_time, self.end_time)
+        return "Stage:{} from: {} to {}".format(self.number, self.start_time.time(), self.end_time.time())
 
     def load(self, obj, serializer):
         self.number = int(obj["number"])
         self.start_time = get_date(obj["start_time"])
         self.end_time = get_date(obj["end_time"])
-        self.key = self._make_key()
+        self._key = self._make_key()
 
     def disp(self):
         return "{:%H:%M} to {:%H:%M} : Stage {}".format(self.start_time, self.end_time, self.number)
 
 
 def stage_sort(s: Stage):
-    return s.key
+    return s._key
 
 
 def merge_all_stages(stages: List[Stage]):
     if len(stages) < 2:
         return stages
+
+    # merge different stages with same times together
+    i: int = 0
+    while i < len(stages) - 1:
+        stage1 = stages[i]
+        stage2 = stages[i + 1]
+        if stage1.start_time == stage2.start_time and stage1.end_time == stage2.end_time:
+            del stages[i]
+        else:
+            i = i + 1
 
     cleaned_stages: Lst[Stage] = Lst(stages)
 
@@ -59,25 +69,6 @@ def merge_all_stages(stages: List[Stage]):
 
 
 serializer_instance.register(Stage(), "end_time:number:start_time")
-
-
-# class AreaScheduleMap:
-#     def __init__(self, stage: int = 0, day_group: str = '', start_time: datetime.datetime = datetime.datetime.min,
-#                  end_time: datetime.datetime = datetime.datetime.min, zone_list=None):
-#         if zone_list is None:
-#             zone_list = []
-#         self.stage: int = stage
-#         self.day_group: str = day_group
-#         self.start_time: datetime.datetime = start_time
-#         self.end_time: datetime.datetime = end_time
-#         self.zone_list = zone_list
-#
-#     def __str__(self):
-#         return "Stage:{} day_group:{} start:{} end:{} zones:{}".format(self.stage, self.day_group, self.start_time,
-#                                                                        self.end_time, self.zone_list)
-#
-#
-# serializer_instance.register(AreaScheduleMap())
 
 
 class ZoneStageByDay:
@@ -119,6 +110,7 @@ class ZoneStageMap:
         new_list = [Stage(zs.stage, datetime.datetime.combine(for_date, zs.start_time.time()),
                           datetime.datetime.combine(for_date, zs.end_time.time())) for zs in day_schedules
                     if zone in zs.zone_list and zs.stage <= stage]
+        # new_list.sort(key=lambda x: x.start_time, reverse=False)
         new_list.sort(key=stage_sort)
 
         new_list = merge_all_stages(new_list)

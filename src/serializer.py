@@ -22,9 +22,9 @@ class Serializer(json.JSONEncoder):
             signature = self.getClassSignature(obj.__dict__)
         self.classes[signature] = type(obj)
 
-    def serialize(self, obj):
+    def serialize(self, obj, pretty: bool = False):
         d = self.unmap(obj)
-        return json.dumps(d, cls=Serializer)
+        return json.dumps(d, cls=Serializer, indent="\t" if pretty else None)
 
     def deSerialize(self, json_data):
         obj = json.loads(json_data)
@@ -45,9 +45,9 @@ class Serializer(json.JSONEncoder):
         if not isinstance(obj, dict):
             if hasattr(obj, 'serialize'):
                 d = obj.serialize(self)
-                #return d
+                # return d
             elif hasattr(obj, '__dict__'):
-                d = obj.__dict__
+                d = {k: v for (k, v) in obj.__dict__.items() if not k.startswith("_")}
             else:
                 return obj
         else:
